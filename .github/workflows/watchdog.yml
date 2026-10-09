@@ -1,0 +1,50 @@
+name: watchdog
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'     # GitHub may start scheduled runs a few minutes late
+    - cron: '17 3 1 * *'      # monthly keepalive commit (see below)
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Probe and alert, but never restart'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write   # keepalive commit only
+  issues: write     # outage alerts
+
+concurrency:
+  group: watchdog
+  cancel-in-progress: false
+
+jobs:
+  check:
+    if: github.event.schedule != '17 3 1 * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: node watchdog.mjs
+        env:
+          KINSTA_API_KEY: ${{ secrets.KINSTA_API_KEY }}
+          KINSTA_ENV_ID: ${{ vars.KINSTA_ENV_ID }}
+          KINSTA_COMPANY_ID: ${{ vars.KINSTA_COMPANY_ID }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && '1' || '0' }}
+
+  # GitHub pauses scheduled workflows in a public repo after 60 days without a commit.
+  keepalive:
+    if: github.event.schedule == '17 3 1 * *'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          date -u +%FT%TZ > heartbeat.txt
+          git config user.name "watchdog-keepalive"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add heartbeat.txt && git commit -m "Keep the scheduled watchdog alive (monthly heartbeat)" && git push
